@@ -18,6 +18,8 @@ from qfieldcloud.core.models import Person, User, UserAccount
 
 from .exceptions import NotPremiumPlanException
 
+logger = logging.getLogger(__name__)
+
 
 def get_subscription_model() -> "Subscription":
     return apps.get_model(settings.QFIELDCLOUD_SUBSCRIPTION_MODEL)
@@ -628,7 +630,7 @@ class AbstractSubscription(models.Model):
                 update_fields.append(attr_name)
                 setattr(subscription, attr_name, attr_value)
 
-            logging.info(f"Updated subscription's fields: {', '.join(update_fields)}")
+            logger.info(f"Updated subscription's fields: {', '.join(update_fields)}")
 
             subscription.save(update_fields=update_fields)
 
@@ -672,6 +674,7 @@ class AbstractSubscription(models.Model):
         return regular_subscription
 
     @classmethod
+    @transaction.atomic()
     def create_subscription(
         cls,
         account: UserAccount,
@@ -692,6 +695,30 @@ class AbstractSubscription(models.Model):
 
         TODO Python 3.11 the actual return type is Self
         """
+        # expire all already existing draft Subscriptions
+        expired_draft_subscription = cls.objects.filter(
+            account=account,
+            status__in=[cls.Status.INACTIVE_DRAFT],
+        ).update(status=cls.Status.INACTIVE_DRAFT_EXPIRED)
+
+        logger.info(
+            f"Creating a new subscription, expired {expired_draft_subscription} expired subscription(s)."
+        )
+
+        # if there is a current subscription, make it current.active_until to match the the new.active_since, if new.active_since is defined
+        if (
+            cls.objects.active().filter(account_id=account.pk).count() > 0
+            and active_since is not None
+        ):
+            current_subscription = account.active_subscription
+
+            logger.info(
+                f"Setting current subscription active_until from {current_subscription.active_until} to {active_since}."
+            )
+
+            current_subscription.active_until = active_since
+            current_subscription.save(update_fields=["active_until"])
+
         if plan.is_trial:
             assert isinstance(
                 active_since, datetime
