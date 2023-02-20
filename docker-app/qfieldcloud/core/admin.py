@@ -1,6 +1,6 @@
 import json
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Generator, List, Tuple
 
 from allauth.account.forms import EmailAwarePasswordResetTokenGenerator
 from allauth.account.utils import user_pk_to_url_str
@@ -328,6 +328,16 @@ class PersonAdmin(admin.ModelAdmin):
                 "timeout_days": settings.PASSWORD_RESET_TIMEOUT / 3600 / 24,
             },
         )
+
+    def gen_users_email_addresses(self) -> Generator[Tuple[str, str], None, None]:
+        return (
+            (user.email, user.username)
+            for user in User.objects.all()
+            if user.email and len(user.email) > 0
+        )
+
+    def list_users_email_addresses(self) -> List[Tuple[str, str]]:
+        return list(self.gen_users_email_addresses())
 
 
 class ProjectCollaboratorInline(admin.TabularInline):
