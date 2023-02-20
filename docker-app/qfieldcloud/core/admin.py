@@ -1,6 +1,7 @@
+import csv
 import json
 import time
-from typing import Any, Dict, Generator, List, Tuple
+from typing import Any, Dict, Generator, List
 
 from allauth.account.forms import EmailAwarePasswordResetTokenGenerator
 from allauth.account.utils import user_pk_to_url_str
@@ -14,7 +15,7 @@ from django.db.models.fields.json import JSONField
 from django.db.models.functions import Lower
 from django.forms import ModelForm, fields, widgets
 from django.http import HttpRequest
-from django.http.response import Http404, HttpResponseRedirect
+from django.http.response import Http404, HttpResponseRedirect, StreamingHttpResponse
 from django.shortcuts import resolve_url
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
@@ -42,6 +43,7 @@ from qfieldcloud.core.models import (
     User,
     UserAccount,
 )
+from qfieldcloud.core.raw_query_containers import UserEmailDetails
 from qfieldcloud.core.utils2 import jobs
 from rest_framework.authtoken.models import TokenProxy
 
@@ -329,15 +331,54 @@ class PersonAdmin(admin.ModelAdmin):
             },
         )
 
-    def gen_users_email_addresses(self) -> Generator[Tuple[str, str], None, None]:
+    def gen_users_email_addresses(self) -> Generator[UserEmailDetails, None, None]:
+        raw_queryset = User.objects.raw(
+            """
+            SELECT
+                DISTINCT ON (coalesce(ae.email, u.email)) coalesce(ae.email, u.email),
+                u.username,
+                u.first_name,
+                u.last_name
+            FROM
+                core_user u
+                LEFT JOIN account_emailaddress ae ON ae.user_id = u.id
+                AND ae.primary
+            WHERE
+                coalesce(ae.email, u.email) IS NOT NULL
+                AND coalesce(ae.email, u.email) != ''
+            ORDER BY
+                coalesce(ae.email, u.email),
+                u.type;
+        """
+        )
         return (
-            (user.email, user.username)
-            for user in User.objects.all()
-            if user.email and len(user.email) > 0
+            UserEmailDetails(u.username, u.first_name, u.last_name, u.email)
+            for u in raw_queryset
         )
 
-    def list_users_email_addresses(self) -> List[Tuple[str, str]]:
+    def list_users_email_addresses(self) -> List[UserEmailDetails]:
         return list(self.gen_users_email_addresses())
+
+    @admin.action(description="Export all users' email contact details to .csv")
+    def export_emails_to_csv(self, request) -> StreamingHttpResponse:
+        """ "Export all users' email contact details to .csv"""
+
+        class PseudoBuffer:
+            # Good idea from https://docs.djangoproject.com/en/4.1/howto/outputting-csv/
+            def write(self, value):
+                return value
+
+        rows = self.gen_users_email_addresses()
+        pseudo_buffer = PseudoBuffer()
+        writer = csv.writer(pseudo_buffer)
+
+        return StreamingHttpResponse(
+            (writer.writerow(row) for row in rows),
+            content_type="text/csv",
+            headers={
+                "Content-Disposition": 'attachment; filename="exported_users_emails.csv"'
+            },
+        )
 
 
 class ProjectCollaboratorInline(admin.TabularInline):
